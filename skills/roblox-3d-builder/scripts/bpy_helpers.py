@@ -1,10 +1,20 @@
 """
-Reusable Blender (bpy) helpers for procedurally building Roblox game props.
+Reusable Blender (bpy) helpers for procedurally building Roblox game props and characters.
 
 Copy this file next to your generation scripts (or keep one shared copy per project) and
 import from it, instead of re-deriving basic geometry/material code in every script — reusing
 the same building blocks is a big part of how generated objects end up looking consistent with
 each other.
+
+Two families of geometry helpers, pick per-object rather than defaulting to one:
+
+- Primitives (create_box, create_cylinder, create_sphere) + boolean_combine — good for
+  hard-surface objects: furniture, containers, weapons, machinery. Distinct flat/angular parts
+  that plausibly bolt together.
+- skin_mesh_from_edges, create_mesh_from_data, create_bezier_curve, add_subsurf — good for
+  organic shapes: creatures, characters, plants, anything that should read as one continuous
+  rounded form rather than a collection of parts. Stacking primitives for these tends to
+  produce a visibly segmented "pile of shapes" look — reach for these instead.
 
 Everything here is meant to be called from a script run as:
     blender --background --python your_script.py
@@ -75,6 +85,136 @@ def mirror_object(obj, axis='X'):
     mod.use_axis[1] = axis == 'Y'
     mod.use_axis[2] = axis == 'Z'
     return mod
+
+
+def shade_smooth(obj):
+    """Set smooth shading on an object. Almost always wanted alongside add_subsurf() —
+    without this, a subdivided mesh still displays with visible facets even though the extra
+    geometry is there, which defeats the point of subdividing it in the first place."""
+    for poly in obj.data.polygons:
+        poly.use_smooth = True
+    return obj
+
+
+def add_subsurf(obj, levels=2, render_levels=None, apply=False):
+    """Add a Subdivision Surface modifier — the single biggest lever for turning a blocky,
+    low-poly cage into a smooth, rounded, organic-looking shape. The right way to use this is
+    to build a *simple, chunky* base mesh (few vertices, roughly the right proportions) and let
+    this modifier do the rounding, rather than trying to fake roundness by stacking lots of
+    small primitives — the latter is what produces a "pile of shapes" look instead of a single
+    coherent silhouette. Always pair with shade_smooth(obj) so the result actually reads as
+    curved.
+    """
+    mod = obj.modifiers.new("Subdivision", 'SUBSURF')
+    mod.levels = levels
+    mod.render_levels = render_levels if render_levels is not None else levels
+    if apply:
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+    return mod
+
+
+def boolean_combine(obj_a, obj_b, operation='UNION', apply=True, delete_operand=True):
+    """Combine two mesh objects with a real boolean operation, so their geometry actually
+    merges or cuts into a single continuous mesh — unlike just placing two objects so they
+    visually overlap, which leaves two separate surfaces intersecting each other (visible
+    seams, wrong shading, and it reads as "two shapes touching" rather than one form). Use
+    UNION to fuse overlapping pieces into one blob (e.g. two overlapping spheres into a single
+    rounded body), DIFFERENCE to carve a notch or hole, INTERSECT to keep only the overlap.
+
+    `obj_a` ends up holding the combined result and is what you keep working with afterward.
+    `obj_b` is deleted once merged in (pass delete_operand=False to keep it, e.g. if you plan to
+    reuse it in another boolean op).
+    """
+    mod = obj_a.modifiers.new("Boolean", 'BOOLEAN')
+    mod.operation = operation
+    mod.object = obj_b
+    if apply:
+        bpy.context.view_layer.objects.active = obj_a
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+        if delete_operand:
+            bpy.data.objects.remove(obj_b, do_unlink=True)
+    return obj_a
+
+
+def create_mesh_from_data(name, verts, faces, location=(0.0, 0.0, 0.0)):
+    """Build a completely custom mesh from raw vertex positions and faces — for shapes that
+    don't reduce to a primitive, or a boolean combination of primitives (a custom silhouette, a
+    hand-authored low-poly head or wing shape). `verts` is a list of (x, y, z) tuples; `faces`
+    is a list of index tuples/lists into `verts` (3+ indices per face).
+
+    Reach for this whenever describing a shape as stacked primitives would be more convoluted
+    than just placing the vertices you actually want directly — it's the general-purpose
+    fallback underneath every other geometry helper here.
+    """
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(list(verts), [], [list(f) for f in faces])
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    obj.location = location
+    bpy.context.collection.objects.link(obj)
+    return obj
+
+
+def skin_mesh_from_edges(name, points, edges, radii=None, location=(0.0, 0.0, 0.0), subsurf_levels=2):
+    """Build an organic, rounded shape from a simple skeleton: a list of `points` (vertex
+    positions) connected by `edges` (pairs of indices into `points`), fleshed out into a smooth
+    tube/blob mesh by Blender's Skin modifier. Think of it as drawing the "stick figure" of a
+    limb, tail, or creature torso and letting Blender generate the volume around it — this is
+    almost always a better starting point for an organic character body or limb than manually
+    stacking spheres and cylinders, which tends to produce a visibly segmented "snowman" look
+    instead of one continuous form.
+
+    `radii` optionally controls skin thickness per point — a list the same length as `points`,
+    each entry either a single float (circular cross-section) or an (x, y) pair (elliptical).
+    Vary these along a limb to taper it, or make one point much larger than its neighbors for a
+    torso/head bulge. A Subdivision Surface modifier is added automatically so the result reads
+    as smooth; adjust `subsurf_levels` (or remove the modifier afterward) for a chunkier look.
+    """
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(list(points), [list(e) for e in edges], [])
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    obj.location = location
+    bpy.context.collection.objects.link(obj)
+
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    bpy.ops.object.modifier_add(type='SKIN')
+
+    if radii is not None:
+        skin_layer = obj.data.skin_vertices[0].data
+        for i, r in enumerate(radii):
+            skin_layer[i].radius = (r, r) if isinstance(r, (int, float)) else tuple(r)
+
+    add_subsurf(obj, levels=subsurf_levels)
+    shade_smooth(obj)
+    return obj
+
+
+def create_bezier_curve(name, points, bevel_depth=0.05, bevel_resolution=4, location=(0.0, 0.0, 0.0)):
+    """Create a Bezier curve running through `points` (a list of (x, y, z) coordinates, with
+    automatic smooth handles) and give it real 3D thickness via `bevel_depth` so it renders as a
+    solid tube rather than a flat line. Use this for anything with a flowing, curved silhouette
+    that primitives can't capture well — a tail, a horn, a vine, a wing spar.
+    """
+    curve_data = bpy.data.curves.new(name, type='CURVE')
+    curve_data.dimensions = '3D'
+    curve_data.bevel_depth = bevel_depth
+    curve_data.bevel_resolution = bevel_resolution
+
+    spline = curve_data.splines.new('BEZIER')
+    spline.bezier_points.add(len(points) - 1)
+    for i, co in enumerate(points):
+        bp = spline.bezier_points[i]
+        bp.co = co
+        bp.handle_left_type = 'AUTO'
+        bp.handle_right_type = 'AUTO'
+
+    obj = bpy.data.objects.new(name, curve_data)
+    obj.location = location
+    bpy.context.collection.objects.link(obj)
+    return obj
 
 
 def make_principled_material(name, base_color=(0.8, 0.8, 0.8, 1.0), roughness=0.5, metallic=0.0):

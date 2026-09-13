@@ -58,21 +58,39 @@ current object.
 
 ## Step 2 — Interpret the request into a build plan
 
-Before writing code, work out in plain terms: what primitive shapes make up this object, their
-rough proportions relative to each other, and which parts get which material from the style
-guide's palette. For anything with left/right or repeated symmetry (chair legs, tree branches),
-plan to build one and mirror/array it rather than writing out each copy by hand — it keeps the
-script shorter and easier to adjust later.
+Before writing code, decide which of two families of technique fits the object — this is the
+single biggest factor in whether the result looks coherent or like a pile of shapes glued
+together, so don't skip it:
+
+- **Hard-surface** (furniture, containers, weapons, machinery, architecture): the object is
+  genuinely made of distinct flat/angular parts that plausibly bolt or hinge together. Build it
+  from `create_box`/`create_cylinder`/`create_sphere`, combined with `boolean_combine` where
+  parts should read as one continuous piece of material (e.g. a handle actually fused into a
+  lid) rather than just touching.
+- **Organic** (creatures, characters, plants, anything that should read as one continuous
+  rounded form): do **not** default to stacking primitives — a body built from a sphere-head +
+  cylinder-limbs + sphere-hands reads as a snowman, not a creature, because each part is
+  visibly its own separate blob with a seam where it meets the next one. Instead, lean on
+  `skin_mesh_from_edges` (draw the "stick figure" skeleton, let Blender flesh it out into one
+  continuous skin) and `add_subsurf` + `shade_smooth` (round off a simple blocky cage into a
+  smooth form), with `create_bezier_curve` for flowing bits like tails/horns/vines, and
+  `boolean_combine`/`create_mesh_from_data` for anything neither of those covers.
+
+Work out in plain terms: for hard-surface, what primitive shapes make up the object and their
+proportions; for organic, what the skeleton/silhouette looks like (which points, connected how,
+tapering where). For anything with left/right or repeated symmetry (chair legs, tree branches,
+a creature's four limbs), plan to build one and `mirror_object` it rather than writing out each
+copy by hand.
 
 ## Step 3 — Write the bpy script
 
-Use the helpers in `scripts/bpy_helpers.py` instead of re-deriving basic geometry/material code
-each time — copy the file into the project (once) if it isn't already there, and `import` it
-from the generation script. Reusing the same helpers across objects is a big part of how style
+Use the helpers in `scripts/bpy_helpers.py` instead of re-deriving geometry/material code each
+time — copy the file into the project (once) if it isn't already there, and `import` it from
+the generation script. Reusing the same helpers across objects is a big part of how style
 consistency actually holds up in practice: the same rounding, the same material construction,
 applied every time.
 
-A generation script generally follows this shape:
+A hard-surface generation script generally follows this shape:
 
 ```python
 import bpy
@@ -98,6 +116,38 @@ assign_material(lid, wood)
 
 export_glb(bpy.path.abspath("//output/treasure_chest.glb"))
 bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath("//output/treasure_chest.blend"))
+```
+
+An organic one leans on the skin/subsurf helpers instead — for example, a chibi creature body
+built as one continuous skinned skeleton rather than assembled spheres:
+
+```python
+import bpy
+import sys, os
+sys.path.append(os.path.dirname(__file__))
+from bpy_helpers import (
+    clear_scene, skin_mesh_from_edges, create_bezier_curve,
+    make_principled_material, assign_material, shade_smooth,
+    export_glb,
+)
+
+clear_scene()
+
+# Stick-figure skeleton: head (big), neck, body, tail base. Radii control the bulge at each
+# point — a big radius at the head, tapering down toward the tail.
+points = [(0, 0, 1.4), (0, 0, 1.1), (0, -0.3, 0.7), (0, -0.6, 0.5)]
+edges = [(0, 1), (1, 2), (2, 3)]
+radii = [0.5, 0.3, 0.4, 0.2]
+body = skin_mesh_from_edges("DragonBody", points, edges, radii=radii)
+
+skin = make_principled_material("FireScales", base_color=(0.91, 0.27, 0.16, 1.0), roughness=0.5)
+assign_material(body, skin)
+
+tail = create_bezier_curve("Tail", [(0, -0.6, 0.5), (0, -1.1, 0.35), (0, -1.4, 0.15)], bevel_depth=0.12)
+assign_material(tail, skin)
+
+export_glb(bpy.path.abspath("//output/fire_dragon.glb"))
+bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath("//output/fire_dragon.blend"))
 ```
 
 Save the script under the project (e.g. `blender_scripts/<object_name>.py`) so it's a
@@ -152,6 +202,9 @@ command after each edit.
 
 - `references/style-guide-template.md` — the questions to ask when drafting a new project's
   `style-guide.md`.
-- `scripts/bpy_helpers.py` — reusable geometry/material/texture/export functions; read this
-  before writing a generation script so you know what's already available.
+- `scripts/bpy_helpers.py` — reusable geometry/material/texture/export functions, covering both
+  hard-surface (primitives, boolean) and organic (skin, subsurf, curves, custom mesh)
+  techniques; read this before writing a generation script so you know what's already
+  available, and re-read it if a first attempt at an organic shape comes out looking like
+  disconnected parts rather than one form — it means the wrong family of helper was used.
 - `scripts/generate_texture.py` — fetches a texture image from Pollinations.ai given a prompt.
