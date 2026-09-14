@@ -16,11 +16,20 @@ Two families of geometry helpers, pick per-object rather than defaulting to one:
   rounded form rather than a collection of parts. Stacking primitives for these tends to
   produce a visibly segmented "pile of shapes" look — reach for these instead.
 
+Plus finishing helpers used regardless of which family built the geometry:
+join_objects (merge every piece into one final Part, keeping per-piece materials as separate
+slots), create_armature/bind_mesh_to_armature (a basic animation-ready rig for characters/
+creatures), and render_preview (render a quick image to actually look at before deciding a
+result is done, rather than judging it from the code alone).
+
 Everything here is meant to be called from a script run as:
     blender --background --python your_script.py
 """
 
+import os
+
 import bpy
+import mathutils
 
 
 def clear_scene():
@@ -190,6 +199,122 @@ def skin_mesh_from_edges(name, points, edges, radii=None, location=(0.0, 0.0, 0.
     add_subsurf(obj, levels=subsurf_levels)
     shade_smooth(obj)
     return obj
+
+
+def convert_curve_to_mesh(curve_obj):
+    """Convert a curve object (e.g. from create_bezier_curve) into a real mesh object. Do this
+    before join_objects — a curve and a mesh can't be joined directly, and the final delivered
+    object needs to be one mesh, not a mix of object types."""
+    bpy.context.view_layer.objects.active = curve_obj
+    curve_obj.select_set(True)
+    bpy.ops.object.convert(target='MESH')
+    return curve_obj
+
+
+def join_objects(name, objects):
+    """Join multiple mesh objects into a single object — the final step of building anything
+    with more than one piece, so the deliverable is one continuous Part rather than several
+    separate objects merely sitting next to each other (which both Roblox and Blender still
+    treat as unrelated pieces, not one asset).
+
+    Each input object keeps its own material as a distinct material slot on the joined result —
+    the join preserves which faces came from which object, so per-piece coloring/texturing
+    (head vs. body vs. wings, etc.) still works on the single final mesh. This only works if you
+    assigned materials to each piece *before* calling this — there's no "which piece was this
+    face part of" information left afterward to assign them retroactively.
+    """
+    bpy.ops.object.select_all(action='DESELECT')
+    for obj in objects:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = objects[0]
+    bpy.ops.object.join()
+    joined = bpy.context.view_layer.objects.active
+    joined.name = name
+    return joined
+
+
+def create_armature(name, bones, location=(0.0, 0.0, 0.0)):
+    """Create a simple armature (skeleton) so a character/creature is animation-ready later,
+    even though this skill doesn't do the animating itself. `bones` is a list of
+    (bone_name, head, tail, parent_name_or_None) tuples, head/tail as (x, y, z) positions in the
+    armature's local space — use the same joint positions you built the mesh's skeleton from
+    (skin_mesh_from_edges) so the rig actually lines up with the mesh it will move.
+
+    This produces a usable starting bone chain, not a production rig — IK, custom controls, and
+    hand-painted weights are out of scope; mention that limit if asked rather than attempting it.
+    """
+    arm_data = bpy.data.armatures.new(f"{name}_data")
+    arm_obj = bpy.data.objects.new(name, arm_data)
+    arm_obj.location = location
+    bpy.context.collection.objects.link(arm_obj)
+
+    bpy.context.view_layer.objects.active = arm_obj
+    bpy.ops.object.mode_set(mode='EDIT')
+    edit_bones = arm_data.edit_bones
+    created = {}
+    for bone_name, head, tail, _parent_name in bones:
+        b = edit_bones.new(bone_name)
+        b.head = head
+        b.tail = tail
+        created[bone_name] = b
+    for bone_name, _head, _tail, parent_name in bones:
+        if parent_name:
+            created[bone_name].parent = created[parent_name]
+    bpy.ops.object.mode_set(mode='OBJECT')
+    return arm_obj
+
+
+def bind_mesh_to_armature(mesh_obj, armature_obj):
+    """Parent a mesh to an armature with automatic weights, so it can be posed/animated later.
+    Call this after the mesh is finalized (joined into one object via join_objects, materials
+    assigned) — adding more geometry to the mesh afterward won't get weights automatically.
+    """
+    bpy.ops.object.select_all(action='DESELECT')
+    mesh_obj.select_set(True)
+    armature_obj.select_set(True)
+    bpy.context.view_layer.objects.active = armature_obj
+    bpy.ops.object.parent_set(type='ARMATURE_AUTO')
+    return armature_obj
+
+
+def render_preview(filepath, resolution_x=800, resolution_y=800):
+    """Render a quick preview image of the current scene to `filepath` (PNG) — meant to be
+    looked at with your own Read/image tool right after calling this, as a self-check before
+    handing a result to the user, not as a deliverable in its own right. Sets up a simple camera
+    and light if the scene doesn't already have one, and uses Blender's fast realtime engine
+    (not a slow, high-quality render) since this only needs to be good enough to judge
+    proportions, obviously disconnected pieces, and roughly-right material colors.
+    """
+    scene = bpy.context.scene
+
+    directory = os.path.dirname(filepath)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    available_engines = [e.identifier for e in bpy.types.RenderSettings.bl_rna.properties['engine'].enum_items]
+    scene.render.engine = 'BLENDER_EEVEE_NEXT' if 'BLENDER_EEVEE_NEXT' in available_engines else 'BLENDER_EEVEE'
+    scene.render.resolution_x = resolution_x
+    scene.render.resolution_y = resolution_y
+    scene.render.filepath = filepath
+
+    if not any(o.type == 'CAMERA' for o in bpy.data.objects):
+        cam_data = bpy.data.cameras.new("PreviewCam")
+        cam_obj = bpy.data.objects.new("PreviewCam", cam_data)
+        bpy.context.collection.objects.link(cam_obj)
+        cam_obj.location = (4.0, -4.0, 3.0)
+        direction = mathutils.Vector((0.0, 0.0, 0.5)) - cam_obj.location
+        cam_obj.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
+        scene.camera = cam_obj
+
+    if not any(o.type == 'LIGHT' for o in bpy.data.objects):
+        light_data = bpy.data.lights.new("PreviewLight", type='SUN')
+        light_data.energy = 3.0
+        light_obj = bpy.data.objects.new("PreviewLight", light_data)
+        bpy.context.collection.objects.link(light_obj)
+        light_obj.rotation_euler = (0.8, 0.2, 0.6)
+
+    bpy.ops.render.render(write_still=True)
+    return filepath
 
 
 def create_bezier_curve(name, points, bevel_depth=0.05, bevel_resolution=4, location=(0.0, 0.0, 0.0)):
