@@ -313,6 +313,20 @@ def bake_material_to_image(obj, resolution=1024, out_path="baked_texture.png", b
 
 
 def export_glb(filepath):
-    """Export the whole current scene as a .glb — the easiest format to preview quickly
-    (drag into any online glTF viewer, or Blender's own File > Import for a sanity check)."""
+    """Export the whole current scene as a .glb. Not part of the default workflow (the default
+    deliverable is the .blend file itself, reviewed by opening it in Blender) — this is only
+    for the rare case where a lightweight web/glTF preview is specifically wanted."""
     bpy.ops.export_scene.gltf(filepath=filepath, export_format='GLB')
+
+
+def export_fbx(filepath, selected_only=False):
+    """Export the scene (or just the selected objects) as .fbx — the format Roblox Studio's
+    mesh import (Toolbox > Import 3D, or drag-and-drop) expects. Only call this when the user
+    explicitly asks to export/prepare a model for Roblox — the default deliverable after a
+    generation is just the .blend file, not an export.
+
+    Bake any procedural materials to real image textures first with bake_material_to_image —
+    Roblox needs actual texture images, not a Blender shader node graph, and fbx export does not
+    carry procedural node setups over.
+    """
+    bpy.ops.export_scene.fbx(filepath=filepath, use_selection=selected_only)

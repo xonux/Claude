@@ -100,7 +100,6 @@ from bpy_helpers import (
     clear_scene, create_box, create_cylinder,
     make_principled_material, assign_material,
     apply_image_texture, add_procedural_noise,
-    export_glb,
 )
 
 clear_scene()
@@ -114,7 +113,6 @@ add_procedural_noise(wood, scale=8.0)  # subtle wood grain, procedural, no image
 lid = create_box("ChestLid", size=(1.2, 0.7, 0.25), location=(0, 0, 0.72), bevel=0.03)
 assign_material(lid, wood)
 
-export_glb(bpy.path.abspath("//output/treasure_chest.glb"))
 bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath("//output/treasure_chest.blend"))
 ```
 
@@ -128,7 +126,6 @@ sys.path.append(os.path.dirname(__file__))
 from bpy_helpers import (
     clear_scene, skin_mesh_from_edges, create_bezier_curve,
     make_principled_material, assign_material, shade_smooth,
-    export_glb,
 )
 
 clear_scene()
@@ -146,7 +143,6 @@ assign_material(body, skin)
 tail = create_bezier_curve("Tail", [(0, -0.6, 0.5), (0, -1.1, 0.35), (0, -1.4, 0.15)], bevel_depth=0.12)
 assign_material(tail, skin)
 
-export_glb(bpy.path.abspath("//output/fire_dragon.glb"))
 bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath("//output/fire_dragon.blend"))
 ```
 
@@ -186,9 +182,10 @@ Execute the script headlessly:
 blender --background --python blender_scripts/<object_name>.py
 ```
 
-Report the output paths (`.blend` and `.glb`) to the user and tell them to open the `.blend` in
-Blender to inspect it. Don't try to render a preview image yourself as a substitute — the user
-said they want to look at the real model, not a picture of one.
+The default, and only, deliverable at this point is the **`.blend` file** — don't export a
+`.glb` or anything else unless asked. Report the `.blend` path to the user and tell them to
+open it in Blender to inspect it. Don't try to render a preview image yourself as a
+substitute — the user said they want to look at the real model, not a picture of one.
 
 ## Step 6 — Iterate
 
@@ -198,7 +195,19 @@ helper call), not manual edits to the mesh, so the object stays reproducible and
 generalizes if the user asks for a similar object later. Re-run the same `blender --background`
 command after each edit.
 
-## Reference files
+## Step 7 — Exporting for Roblox (only when asked)
+
+The `.blend` stays the working file across every iteration above — don't export anything until
+the user explicitly says the model is ready and asks for it to go toward Roblox. At that point:
+
+1. If any material is still procedural (noise/color-ramp nodes rather than an image), bake it
+   to a real texture image with `bake_material_to_image` first — Roblox's importer doesn't
+   understand Blender shader graphs, only image textures.
+2. Export with `export_fbx(filepath)` from `bpy_helpers.py` — `.fbx` is the format Roblox
+   Studio's mesh import (Toolbox > Import 3D, or drag-and-drop) expects, not `.glb`.
+3. Tell the user where the `.fbx` landed and that importing it into Studio itself is a manual
+   step on their end (see the project's Roblox Studio MCP setup for anything further inside
+   Studio — that's a separate concern from this skill).
 
 - `references/style-guide-template.md` — the questions to ask when drafting a new project's
   `style-guide.md`.
