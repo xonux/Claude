@@ -88,7 +88,31 @@ proportions; for organic, what the skeleton/silhouette looks like (which points,
 tapering where, and — for a character/creature — roughly where the joints will need to be for
 Step 4's armature, so the two line up). For anything with left/right or repeated symmetry
 (chair legs, tree branches, a creature's four limbs), plan to build one and `mirror_object` it
-rather than writing out each copy by hand.
+rather than writing out each copy by hand — **except** for a skin-based organic body, where the
+symmetric parts should instead be explicit points in the *same* skeleton graph (see the warning
+below on why).
+
+### Common failure mode: sliding back into primitives anyway
+
+Choosing "organic" only helps if it's followed through on. It's easy to start with good
+intentions and still end up writing `create_sphere` for the head, `create_cylinder` for each
+limb — which is the exact "pile of shapes" problem this section exists to avoid, just reached
+by a slightly longer path. For a creature or character, `create_box`/`create_cylinder`/
+`create_sphere` shouldn't appear in the script at all, except maybe for a genuinely
+hard-surface accessory worn by it (a belt buckle, a strapped-on pack). The head, neck, torso,
+limbs, and tail should all come from **one single `skin_mesh_from_edges` call** over one
+connected skeleton graph — not one call per body part. If a limb, head, or torso is about to be
+built with a primitive, that's the signal to add another point (and edge) to the skeleton graph
+instead, not to reach for the primitive.
+
+A second, related trap: **don't mirror a skin-based body across its own centerline.** The Skin
+modifier gives every point a radius, so a spine point sitting exactly on the mirror plane
+already bulges out past it on both sides — mirroring the whole mesh afterward duplicates the
+spine into two overlapping copies rather than cleanly completing the other side. For a
+symmetric creature, put both the left and right versions of paired points (legs, arms) directly
+in the same points/edges lists that build the skeleton, in the same `skin_mesh_from_edges` call.
+Save `mirror_object` for pieces that don't sit on the centerline to begin with, like a wing
+built separately from the torso.
 
 ## Step 3 — Build each piece with its material, then join into one Part
 
@@ -140,36 +164,124 @@ render_preview(bpy.path.abspath("//output/treasure_chest_preview.png"))
 bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath("//output/treasure_chest.blend"))
 ```
 
-An organic character adds an armature (Step 4) between the join and the render/save — see that
-section for the full example continuing from a joined dragon mesh.
+See Step 4 for the full organic example (skeleton, wings, join, and armature together) — it
+follows the same build-then-join shape, just with the organic techniques from Step 2 instead of
+primitives, plus a rigging step at the end for characters/creatures.
 
 Save the script under the project (e.g. `blender_scripts/<object_name>.py`) so it's a
 reusable, versionable record of how the asset was built — re-running it after edits is how
 iteration happens, not hand-editing the mesh outside of Blender.
 
-## Step 4 — Rig characters/creatures with a basic armature
+## Step 4 — Full organic example, plus rigging
 
-Any character or creature — not static props like a chest or barrel — should end up with a
-simple armature (skeleton) so it's animation-ready later, even though this skill doesn't do the
-animating itself. Build the armature's bones along the same joint positions you used for
-`skin_mesh_from_edges` in Step 2/3, so the rig actually lines up with the mesh it will move.
+Continuing the organic case from Step 3: the whole body (spine, neck, head, tail, and **all
+four legs, both sides**) comes from one `skin_mesh_from_edges` call over one skeleton graph —
+per the failure-mode warning above, both left and right legs are explicit points in the same
+list, not a mirror of the finished body. Wings, being genuinely off-center pieces rather than
+part of the centerline skeleton, are modeled once and mirrored with `mirror_object` using the
+body as the mirror target (since the wing's own origin isn't at the body's center).
 
 ```python
-from bpy_helpers import create_armature, bind_mesh_to_armature
+import bpy
+import sys, os
+sys.path.append(os.path.dirname(__file__))
+from bpy_helpers import (
+    clear_scene, skin_mesh_from_edges, create_mesh_from_data, add_solidify,
+    make_principled_material, assign_material, mirror_object,
+    join_objects, create_armature, bind_mesh_to_armature, render_preview,
+)
 
-# Same joint positions as the skin_mesh_from_edges skeleton used to build the body.
+clear_scene()
+
+# One connected skeleton for the whole body. Treat these coordinates as a starting point to
+# resize per the style guide, not exact numbers to keep.
+points = [
+    (0.00, 0.00, 0.50),    # 0  hip
+    (0.00, 0.50, 0.60),    # 1  chest
+    (0.00, 0.85, 0.75),    # 2  neck base
+    (0.00, 1.10, 0.95),    # 3  neck mid
+    (0.00, 1.30, 1.10),    # 4  head
+    (0.00, 1.55, 1.05),    # 5  snout
+    (0.00, -0.40, 0.45),   # 6  tail base
+    (0.00, -0.90, 0.30),   # 7  tail mid
+    (0.00, -1.30, 0.15),   # 8  tail tip
+    (0.30, 0.45, 0.55),    # 9  front leg top, right
+    (0.35, 0.50, 0.25),    # 10 front knee, right
+    (0.35, 0.55, 0.05),    # 11 front foot, right
+    (0.30, -0.15, 0.50),   # 12 back leg top, right
+    (0.35, -0.20, 0.22),   # 13 back knee, right
+    (0.35, -0.15, 0.05),   # 14 back foot, right
+    (-0.30, 0.45, 0.55),   # 15 front leg top, left
+    (-0.35, 0.50, 0.25),   # 16 front knee, left
+    (-0.35, 0.55, 0.05),   # 17 front foot, left
+    (-0.30, -0.15, 0.50),  # 18 back leg top, left
+    (-0.35, -0.20, 0.22),  # 19 back knee, left
+    (-0.35, -0.15, 0.05),  # 20 back foot, left
+]
+edges = [
+    (0, 1), (1, 2), (2, 3), (3, 4), (4, 5),   # spine + neck + head + snout
+    (0, 6), (6, 7), (7, 8),                    # tail
+    (1, 9), (9, 10), (10, 11),                 # front right leg
+    (0, 12), (12, 13), (13, 14),               # back right leg
+    (1, 15), (15, 16), (16, 17),               # front left leg
+    (0, 18), (18, 19), (19, 20),               # back left leg
+]
+radii = [0.35, 0.40, 0.28, 0.22, 0.35, 0.15, 0.25, 0.15, 0.05,
+         0.14, 0.10, 0.07, 0.16, 0.11, 0.08,
+         0.14, 0.10, 0.07, 0.16, 0.11, 0.08]
+
+body = skin_mesh_from_edges("DragonBody", points, edges, radii=radii)
+scales = make_principled_material("FireScales", base_color=(0.91, 0.27, 0.16, 1.0), roughness=0.5)
+assign_material(body, scales)
+
+# Wing: a flat membrane outline (shoulder attachment -> two strut points -> trailing edge),
+# given real thickness with add_solidify instead of modeled as two mirrored flat surfaces.
+wing_verts = [
+    (0.00, 0.00, 0.00),   # shoulder attachment
+    (0.35, 0.25, 0.30),   # strut mid
+    (0.55, 0.15, 0.60),   # strut tip
+    (0.30, -0.20, 0.45),  # trailing edge outer
+    (0.10, -0.15, 0.10),  # trailing edge inner
+]
+wing_faces = [(0, 1, 2), (0, 2, 3), (0, 3, 4)]
+membrane = make_principled_material("WingMembrane", base_color=(1.0, 0.85, 0.49, 1.0), roughness=0.4)
+
+wing_r = create_mesh_from_data("WingR", wing_verts, wing_faces, location=(0.3, 0.45, 0.85))
+add_solidify(wing_r, thickness=0.02)
+assign_material(wing_r, membrane)
+
+wing_l = wing_r.copy()
+wing_l.data = wing_r.data.copy()
+wing_l.name = "WingL"
+bpy.context.collection.objects.link(wing_l)
+mirror_mod = mirror_object(wing_l, axis='X', mirror_target=body)
+bpy.context.view_layer.objects.active = wing_l
+bpy.ops.object.modifier_apply(modifier=mirror_mod.name)
+
+dragon = join_objects("FireDragon", [body, wing_r, wing_l])
+
+# Armature bones along the same joint positions used above, so the rig lines up with the mesh.
 bones = [
-    ("Spine", (0, 0, 0.7), (0, 0, 1.1), None),
-    ("Neck",  (0, 0, 1.1), (0, 0, 1.4), "Spine"),
-    ("Tail",  (0, -0.6, 0.5), (0, -1.4, 0.15), "Spine"),
+    ("Hip", (0, 0, 0.5), (0, 0.5, 0.6), None),
+    ("Neck", (0, 0.5, 0.6), (0, 1.3, 1.1), "Hip"),
+    ("Tail", (0, 0, 0.5), (0, -1.3, 0.15), "Hip"),
+    ("FrontLegR", (0.3, 0.45, 0.55), (0.35, 0.55, 0.05), "Hip"),
+    ("BackLegR", (0.3, -0.15, 0.5), (0.35, -0.15, 0.05), "Hip"),
+    ("FrontLegL", (-0.3, 0.45, 0.55), (-0.35, 0.55, 0.05), "Hip"),
+    ("BackLegL", (-0.3, -0.15, 0.5), (-0.35, -0.15, 0.05), "Hip"),
 ]
 armature = create_armature("DragonRig", bones)
-bind_mesh_to_armature(dragon_mesh, armature)  # parents with automatic weights
+bind_mesh_to_armature(dragon, armature)  # parents with automatic weights
+
+render_preview(bpy.path.abspath("//output/fire_dragon_preview.png"))
+bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath("//output/fire_dragon.blend"))
 ```
 
 This gives a usable starting rig (bone chain + automatic weight painting) — real animation
 setup (IK, custom controls, hand-painted weights) is out of scope, mention that if asked rather
-than attempting it.
+than attempting it. Every prop/creature that includes a character or creature should get this
+same armature treatment; a static prop (chest, barrel) skips this step entirely, per Step 3's
+hard-surface example.
 
 ## Step 5 — Materials and textures: both approaches, pick per-piece
 

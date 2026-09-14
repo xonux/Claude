@@ -85,14 +85,23 @@ def create_sphere(name, radius=0.5, location=(0.0, 0.0, 0.0), segments=16, rings
     return obj
 
 
-def mirror_object(obj, axis='X'):
-    """Add a mirror modifier so symmetric parts (legs, arms, branches) only need to be
-    modeled once. Apply the modifier afterward if you need the mirrored geometry as real
-    separate mesh data (e.g. before further per-side edits)."""
+def mirror_object(obj, axis='X', mirror_target=None):
+    """Add a mirror modifier so a symmetric part only needs to be modeled once. By default
+    mirrors around `obj`'s own origin — pass `mirror_target` (another object) when that's wrong,
+    e.g. an off-center piece like a wing, built at its own offset location, that needs to mirror
+    across the *body's* center rather than its own. Apply the modifier afterward (see
+    `bpy.ops.object.modifier_apply`) once you need the mirrored geometry as real separate mesh
+    data — e.g. before `join_objects`, which only sees actual geometry, not modifiers.
+
+    Do NOT use this to mirror a whole skin-based organic body across its own centerline (see the
+    warning in SKILL.md) — it's for genuinely separate off-center pieces.
+    """
     mod = obj.modifiers.new("Mirror", 'MIRROR')
     mod.use_axis[0] = axis == 'X'
     mod.use_axis[1] = axis == 'Y'
     mod.use_axis[2] = axis == 'Z'
+    if mirror_target is not None:
+        mod.mirror_object = mirror_target
     return mod
 
 
@@ -315,6 +324,20 @@ def render_preview(filepath, resolution_x=800, resolution_y=800):
 
     bpy.ops.render.render(write_still=True)
     return filepath
+
+
+def add_solidify(obj, thickness=0.03, apply=True):
+    """Add real volume to an otherwise flat/thin mesh — a wing membrane, a fin, a leaf — via
+    the Solidify modifier. Model the shape as a single flat surface with create_mesh_from_data
+    (just the outline you actually care about, not both sides by hand), then give it thickness
+    with this, rather than trying to build a thin object as two separate mirrored surfaces.
+    """
+    mod = obj.modifiers.new("Solidify", 'SOLIDIFY')
+    mod.thickness = thickness
+    if apply:
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+    return obj
 
 
 def create_bezier_curve(name, points, bevel_depth=0.05, bevel_resolution=4, location=(0.0, 0.0, 0.0)):
